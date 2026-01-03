@@ -1,47 +1,33 @@
 
 export interface UserState {
   name: string;
+  email?: string;
   birthDate: string;
-  onboardingComplete: boolean;
+  deliveryType: 'Vaginal' | 'C-section';
   optedIntoFood: boolean;
-  history: DailyRecord[];
+  preferences: string[];
 }
 
-export interface DailyRecord {
-  date: string;
-  symptomIds: string[];
+export interface SymptomCheck {
+  physical: string[];
+  emotional: string[];
+  lactation: string[];
 }
 
-export interface Symptom {
-  id: string;
-  label: string;
-  category: 'Physical' | 'Internal' | 'Emotional';
-}
-
-export interface MoodOption {
-  id: string;
-  label: string;
-  validation: string;
-}
-
-export interface MealItem {
+export interface Meal {
+  category: 'Breakfast' | 'Lunch' | 'Dinner' | 'Snack';
   name: string;
-  ingredients: string[];
-  steps: string[];
+  why: string;
+  ingredients: string[]; // Should include quantities now
+  instructions: string[]; // New field for cooking steps
 }
 
-export interface DailyMessage {
-  reassurance: string;
+export interface DailyRecoveryPlan {
+  validation: string;
   focus: string;
   actions: string[];
   ignore: string;
-  meals?: MealItem[];
-  spouseMessage?: string;
-  checkInWarning?: string;
+  meals: Meal[];
 }
 
-export enum AppStatus {
-  LOADING = 'LOADING',
-  ONBOARDING = 'ONBOARDING',
-  READY = 'READY'
-}
+export type AppView = 'ONBOARDING' | 'CHECKIN' | 'VALIDATION' | 'PLAN' | 'SETTINGS';

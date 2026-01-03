@@ -1,162 +1,109 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { UserState, DailyMessage } from "../types";
+import { UserState, SymptomCheck, DailyRecoveryPlan } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
-
-/**
- * Delays execution for a given number of milliseconds.
- */
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-/**
- * Retries a function with exponential backoff.
- */
-async function retryWithBackoff<T>(fn: () => Promise<T>, maxRetries: number = 3): Promise<T> {
-  let lastError: any;
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      return await fn();
-    } catch (error: any) {
-      lastError = error;
-      // Check if it's a 429 error
-      const isQuotaError = error?.message?.includes('429') || error?.status === 429 || JSON.stringify(error).includes('429');
-      
-      if (isQuotaError && i < maxRetries - 1) {
-        const waitTime = Math.pow(2, i) * 2000; // 2s, 4s, 8s...
-        console.warn(`Quota exceeded (429). Retrying in ${waitTime}ms... (Attempt ${i + 1}/${maxRetries})`);
-        await sleep(waitTime);
-        continue;
-      }
-      throw error;
-    }
-  }
-  throw lastError;
-}
-
-export async function generateDailyMessage(
-  userState: UserState,
-  symptomIds: string[]
-): Promise<DailyMessage> {
-  const daysSinceBirth = Math.floor(
-    (new Date().getTime() - new Date(userState.birthDate).getTime()) / (1000 * 60 * 60 * 24)
-  );
-
-  const symptomList = symptomIds.length > 0 ? symptomIds.join(', ') : "none (feeling steady)";
-
+export async function generateSaanviGuidance(
+  user: UserState,
+  check: SymptomCheck
+): Promise<DailyRecoveryPlan> {
+  // Always create a new instance right before the call to use the latest API key
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  const birthDate = new Date(user.birthDate);
+  const now = new Date();
+  const daysPost = Math.max(0, Math.floor((now.getTime() - birthDate.getTime()) / 86400000));
+  
+  const preferencesStr = user.preferences.join(', ') || 'No specific preferences';
+  
   const systemInstruction = `
-    You are a deeply compassionate postpartum companion for ${userState.name}.
-    Persona: A wise elder sister providing a safe space.
-    
-    CRITICAL RULES FOR 'reassurance':
-    - Respond with EXACTLY ONE short sentence.
-    - VALIDATE: Acknowledge the feeling or physical sensation.
-    - NO ADVICE: Do not give tips or suggestions in this field.
-    - NO QUESTIONS: Do not ask how she is or anything else.
-    - NO SOLUTIONS: Do not try to fix the feeling.
-    - Use everyday, simple language.
-    - Do not sound automated.
-    - Do not mention the app or system.
-    - It should feel like a quiet, empathetic nod of understanding.
-    - Example: "I hear how much your body is aching today." or "That exhaustion is a heavy weight to carry."
+    You are Saanvi, a wise and empathetic postpartum recovery guide. 
+    Address the user as ${user.name}.
+    Tone: Warm, practical, protective, and minimalist. 
 
-    Current Context:
-    - Day ${daysSinceBirth} postpartum.
-    - Symptoms: ${symptomList}.
-    - Milestone: ${daysSinceBirth <= 42 ? "Sacred Window" : daysSinceBirth <= 180 ? "The Strengthening" : "The Return"}.
+    Context for ${user.name}:
+    - Days Postpartum: ${daysPost}
+    - Delivery: ${user.deliveryType}
+    - Current Symptoms: Physical(${check.physical.join(', ')}), Emotional(${check.emotional.join(', ')}), Lactation(${check.lactation.join(', ')})
+    - Dietary Focus: ${user.optedIntoFood ? 'Enabled' : 'Disabled'}
+    - Preferences: ${preferencesStr}
 
-    Meal Plan (If opted in):
-    - 3 simple, warm, easy-to-digest meals.
-    - Max 3 steps each.
+    Output Requirement:
+    You must return a valid JSON object with the following fields:
+    1. "validation": A single affirming sentence for a new mother.
+    2. "focus": A 3-word title for her core priority today.
+    3. "actions": An array of exactly 3 tiny, manageable wellness actions.
+    4. "ignore": One specific chore she has permission to skip today.
+    5. "meals": An array of 4 objects for Breakfast, Lunch, Dinner, and Snack.
+       - Each meal object MUST include: "category", "name", "why" (benefit for recovery), "ingredients" (array of strings with quantities), and "instructions" (array of step-by-step cooking steps).
 
-    Output as JSON:
-    {
-      "reassurance": "The single validating sentence.",
-      "focus": "3-5 words only.",
-      "actions": ["1-3 simple tasks"],
-      "ignore": "Something to let go of today.",
-      "meals": [...],
-      "spouseMessage": "1 short sentence for her partner."
-    }
+    Safety: If heavy bleeding or incision pain is mentioned, include a gentle reminder to contact a doctor in the validation.
+    Culinary: Prioritize nutrient-dense, warming foods (e.g., bone broths, oats, turmeric, ginger).
   `;
 
-  // Fallback data in case the API completely fails after retries
-  const fallbackData: DailyMessage = {
-    reassurance: "I hear the heaviness you're carrying in your body today.",
-    focus: "Gentle rest and warmth.",
-    actions: ["Sip warm water", "Keep your feet covered", "Deep belly breaths"],
-    ignore: "Unfinished household tasks.",
-    meals: userState.optedIntoFood ? [
-      { 
-        name: "Warm Rice Porridge", 
-        ingredients: ["Rice", "Water", "Pinch of Salt"],
-        steps: ["Boil rice until very soft.", "Add salt.", "Serve warm."] 
-      },
-      { 
-        name: "Simple Mung Dal", 
-        ingredients: ["Mung Dal", "Turmeric", "Ghee"],
-        steps: ["Cook dal with turmeric.", "Stir in ghee.", "Serve hot."] 
-      },
-      { 
-        name: "Stewed Apple", 
-        ingredients: ["Apple", "Cinnamon"],
-        steps: ["Slice apple.", "Simmer with cinnamon until soft.", "Eat warm."] 
-      }
-    ] : [],
-    spouseMessage: "Please take care of all chores today so she can simply focus on her recovery."
-  };
-
   try {
-    const generateContent = async () => {
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `Symptoms: ${symptomList}. Day: ${daysSinceBirth}. Plan for food: ${userState.optedIntoFood}.`,
-        config: {
-          systemInstruction,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              reassurance: { type: Type.STRING },
-              focus: { type: Type.STRING },
-              actions: { type: Type.ARRAY, items: { type: Type.STRING } },
-              ignore: { type: Type.STRING },
-              meals: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    name: { type: Type.STRING },
-                    ingredients: { type: Type.ARRAY, items: { type: Type.STRING } },
-                    steps: { type: Type.ARRAY, items: { type: Type.STRING } }
-                  },
-                  required: ["name", "ingredients", "steps"]
-                }
-              },
-              spouseMessage: { type: Type.STRING }
-            },
-            required: ["reassurance", "focus", "actions", "ignore", "spouseMessage", "meals"]
-          }
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: `Saanvi, please provide my daily rhythm and nourishment plan for today.`,
+      config: {
+        systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            validation: { type: Type.STRING },
+            focus: { type: Type.STRING },
+            actions: { type: Type.ARRAY, items: { type: Type.STRING } },
+            ignore: { type: Type.STRING },
+            meals: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  category: { type: Type.STRING, enum: ["Breakfast", "Lunch", "Dinner", "Snack"] },
+                  name: { type: Type.STRING },
+                  why: { type: Type.STRING },
+                  ingredients: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  instructions: { type: Type.ARRAY, items: { type: Type.STRING } }
+                },
+                required: ["category", "name", "why", "ingredients", "instructions"]
+              }
+            }
+          },
+          required: ["validation", "focus", "actions", "ignore", "meals"]
         }
-      });
-      return JSON.parse(response.text || "{}");
-    };
+      }
+    });
 
-    return await retryWithBackoff(generateContent, 3);
-  } catch (error: any) {
-    console.error("Gemini Service Error:", error);
+    let responseText = response.text || "{}";
+    // Strip markdown if the model accidentally included it
+    responseText = responseText.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
     
-    // Check if it's specifically a quota error for the final fallback return
-    const isQuotaError = error?.message?.includes('429') || error?.status === 429 || JSON.stringify(error).includes('429');
+    const data = JSON.parse(responseText);
     
-    if (isQuotaError) {
-      // If it's a quota error, we provide a slightly different reassurance
-      return {
-        ...fallbackData,
-        reassurance: "The guidance is resting for a moment, but I still see you and the effort you are making."
-      };
-    }
-    
-    return fallbackData;
+    return {
+      validation: data.validation || "You are doing beautifully, Mama.",
+      focus: data.focus || "Gentle Rest Today",
+      actions: Array.isArray(data.actions) ? data.actions : ["Rest", "Hydrate", "Breathe"],
+      ignore: data.ignore || "The laundry can wait.",
+      meals: Array.isArray(data.meals) ? data.meals.map((m: any) => ({
+        category: m.category || 'Snack',
+        name: m.name || 'Nourishing Bowl',
+        why: m.why || 'For gentle energy.',
+        ingredients: Array.isArray(m.ingredients) ? m.ingredients : [],
+        instructions: Array.isArray(m.instructions) ? m.instructions : []
+      })) : []
+    };
+  } catch (e) {
+    console.error("Saanvi service error:", e);
+    // Return a solid fallback to prevent UI spinning indefinitely
+    return {
+      validation: "Take a deep breath. You are doing enough exactly as you are.",
+      focus: "Pure Gentle Healing",
+      actions: ["Drink warm water", "Rest when baby rests", "Ask for a hug"],
+      ignore: "Unnecessary chores",
+      meals: [
+        { category: 'Breakfast', name: 'Warm Spiced Oats', why: 'Gentle on digestion and grounding.', ingredients: ['1 cup oats', '2 cups water', 'Pinch of cinnamon'], instructions: ['Boil water', 'Add oats', 'Simmer for 5 mins'] }
+      ]
+    };
   }
 }
